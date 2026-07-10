@@ -60,7 +60,7 @@ def refine_rho_grid(
     return np.linspace(lo, hi, refine_factor, dtype=float)
 
 
-def _slice_arrays(df_slice: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _slice_arrays(df_slice: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     k = df_slice["log_moneyness"].to_numpy(dtype=float)
     w = (df_slice["implied_vol"].to_numpy(dtype=float) ** 2) * df_slice[
         "business_t"
@@ -69,7 +69,9 @@ def _slice_arrays(df_slice: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.nd
         vega = df_slice["vega"].to_numpy(dtype=float)
     else:
         vega = np.full_like(k, 0.3, dtype=float)
-    return k, w, vega
+    # T is constant per slice (business_t)
+    T = float(df_slice["business_t"].iloc[0])
+    return k, w, vega, T
 
 
 def _spatial_penalty(
@@ -105,6 +107,7 @@ def _evaluate_at_phi(
     k: np.ndarray,
     w: np.ndarray,
     vega: np.ndarray,
+    T: float,
     anchor: AnchorParams,
 ) -> tuple[float, float, AnchorParams]:
     if phi < corridor["phi_min"] or phi > corridor["phi_max"]:
@@ -136,7 +139,23 @@ def _evaluate_at_phi(
     if theta <= 0.0 or not math.isfinite(theta):
         return float("inf"), float("nan"), anchor
 
-    obj = objective_slice((theta, phi, rho), k, w, vega)
+    psi = theta * phi
+    prev_psi = None
+    prev_theta = None
+    if prev_slice_params is not None:
+        prev_psi = float(prev_slice_params["theta"]) * float(prev_slice_params["phi"])
+        prev_theta = float(prev_slice_params["theta"])
+    
+    obj = objective_slice(
+        (psi, rho, phi), 
+        k, w, vega, T, 
+        anchor.theta_star, anchor.k_star,
+        weight_mode=cfg.VEGA_WEIGHT_MODE,
+        lambda_spatial=cfg.LAMBDA_PSI,  # Using LAMBDA_PSI for spatial regularization
+        lambda_temporal=cfg.LAMBDA_TEMPORAL,
+        prev_psi=prev_psi,
+        prev_theta=prev_theta,
+    )
     obj += _spatial_penalty(rho, theta, phi, prev_slice_params)
     return obj, theta, anchor
 
@@ -156,6 +175,7 @@ def _score_rho_candidate(
     k: np.ndarray,
     w: np.ndarray,
     vega: np.ndarray,
+    T: float,
     *,
     use_brent: bool = False,
     n_phi_scan: int = 3,
@@ -177,6 +197,7 @@ def _score_rho_candidate(
             k,
             w,
             vega,
+            T,
             anchor,
         )
         return score, rho, theta, phi, corridor, anchor_result, n_eval
@@ -197,6 +218,7 @@ def _score_rho_candidate(
             k,
             w,
             vega,
+            T,
             anchor,
         )
         n_eval += 1
@@ -217,6 +239,7 @@ def _brent_phi_solve(
     k: np.ndarray,
     w: np.ndarray,
     vega: np.ndarray,
+    T: float,
     anchor: AnchorParams,
 ) -> tuple[float, float, float, AnchorParams, int]:
     phi_min = corridor["phi_min"]
@@ -235,6 +258,7 @@ def _brent_phi_solve(
             k,
             w,
             vega,
+            T,
             anchor,
         )
         return score
@@ -256,6 +280,7 @@ def _brent_phi_solve(
         k,
         w,
         vega,
+        T,
         anchor,
     )
     return score, theta, phi_opt, anchor_result, n_eval
@@ -367,7 +392,7 @@ def solve_single_slice(
     if rho_grid.size == 0:
         return empty_result
 
-    k, w, vega = _slice_arrays(df_slice)
+    k, w, vega, T = _slice_arrays(df_slice)
     n_iterations = 0
     candidates: list[tuple[float, float, float, float, dict[str, Any], AnchorParams]] = []
 
@@ -385,6 +410,7 @@ def solve_single_slice(
             k,
             w,
             vega,
+            T,
             use_brent=True,
             anchor=anchor,
         )
@@ -411,6 +437,7 @@ def solve_single_slice(
                     k,
                     w,
                     vega,
+                    T,
                     use_brent=True,
                     anchor=anchor,
                 )

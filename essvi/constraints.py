@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,237 @@ import pandas as pd
 from essvi import config as cfg
 
 _RHO_BOUND_TOL = 1e-12
+_PASQUAZZI_RHO_TOL = 1e-10
+_PASQUAZZI_PHI_TOL = 1e-10
+
+
+def _mm_l2(abs_rho: float) -> float:
+    if abs_rho >= 1.0:
+        return 0.0
+    return 1.0 / math.tan(math.acos(-abs_rho) / 3.0)
+
+
+def _mm_objective_grid(
+    l: np.ndarray,
+    theta: float,
+    abs_rho: float,
+) -> np.ndarray:
+    """Vectorized ℱ_MM integrand over l-grid."""
+    if abs_rho >= 1.0:
+        return np.full_like(l, np.inf, dtype=float)
+
+    sqrt_1mr2 = math.sqrt(1.0 - abs_rho * abs_rho)
+    n_val = sqrt_1mr2 + abs_rho * l + np.sqrt(l * l + 1.0)
+    n_prime = abs_rho + l / np.sqrt(l * l + 1.0)
+    n_double_prime = 1.0 / (l * l + 1.0) ** 1.5
+
+    g_val = n_prime / 4.0
+    h_val = 1.0 - (l - abs_rho / sqrt_1mr2) * n_prime / (2.0 * n_val)
+    g2_val = n_double_prime - n_prime * n_prime / (2.0 * n_val)
+
+    denom = theta * sqrt_1mr2 * g_val * g_val - g2_val
+    with np.errstate(divide="ignore", invalid="ignore"):
+        numer = 4.0 * theta * sqrt_1mr2 * h_val * h_val
+        out = np.where(denom > 0.0, numer / denom, np.inf)
+    return out
+
+
+def _compute_f_MM_brent(theta: float, rho: float) -> float:
+    """Original Brent-based computation — used for table build only."""
+    if theta <= 0.0:
+        return 0.0
+
+    if abs(rho) >= 1.0:
+        return 4.0 * theta / (1.0 + abs(rho))
+
+    # Use the existing grid-based method as the "exact" reference for table building
+    grid_points = cfg.MM_L_GRID_POINTS
+    l2 = _mm_l2(abs(rho))
+    l_start = l2 + max(cfg.MM_L2_TOL, 1e-8)
+    l_end = cfg.MM_L_MAX
+    if l_start >= l_end:
+        return 4.0 * theta / (1.0 + abs(rho))
+
+    l_grid = np.linspace(l_start, l_end, grid_points)
+    values = _mm_objective_grid(l_grid, theta, abs(rho))
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 4.0 * theta / (1.0 + abs(rho))
+    return float(np.min(finite))
+
+
+# ============================================================
+# P1-5: MM Butterfly Table Precomputation (Martini-Mingone 2022 Prop 6.3)
+# ============================================================
+_MM_THETA_MIN = 1e-6
+_MM_THETA_MAX = 2.0
+_MM_RHO_MAX = 0.999
+_MM_THETA_N = 200
+_MM_RHO_N = 100
+
+_MM_THETA_GRID = None
+_MM_RHO_GRID = None
+_MM_TABLE = None
+_MM_TABLE_BUILT = False
+
+
+def _build_mm_table():
+    """Precompute ℱ_MM(θ, |ρ|) on log(θ) × ρ grid. Runs on import."""
+    global _MM_THETA_GRID, _MM_RHO_GRID, _MM_TABLE, _MM_TABLE_BUILT
+
+    if _MM_TABLE_BUILT:
+        return
+
+    _MM_THETA_GRID = np.logspace(np.log10(_MM_THETA_MIN), np.log10(_MM_THETA_MAX), _MM_THETA_N)
+    _MM_RHO_GRID = np.linspace(0, _MM_RHO_MAX, _MM_RHO_N)
+    _MM_TABLE = np.zeros((_MM_THETA_N, _MM_RHO_N))
+
+    # Build using existing Brent-based function (slow but one-time)
+    for i, theta in enumerate(_MM_THETA_GRID):
+        for j, rho in enumerate(_MM_RHO_GRID):
+            _MM_TABLE[i, j] = _compute_f_MM_brent(theta, rho)
+
+    _MM_TABLE_BUILT = True
+
+
+# Build table on import
+_build_mm_table()
+
+
+# ============================================================
+# P1-1: Corridor Multi-Interval Search (Blueprint §8.4)
+# ============================================================
+
+def _compute_U_psi(
+    rho: float,
+    psi: float,
+    prev_slice: dict[str, float] | None,
+    k_star: float,
+    theta_star: float,
+) -> float:
+    """Upper bound on ψ from Φ ≤ 1 and calendar feasibility (Blueprint §8.4)."""
+    theta = theta_from_psi(psi, rho, k_star, theta_star)
+    if theta <= 0.0:
+        return -1.0
+
+    abs_r = _abs_rho(rho)
+    u_butterfly = _butterfly_upper_psi(theta, abs_r)
+
+    if prev_slice is not None:
+        theta_prev = float(prev_slice["theta"])
+        psi_prev = float(prev_slice["theta"]) * float(prev_slice["phi"])
+        # Φ = φ/φ_prev ≤ 1 → ψ/θ ≤ ψ_prev/θ_prev → ψ ≤ ψ_prev * θ / θ_prev
+        u_calendar = psi_prev * theta / theta_prev
+        return min(u_butterfly, u_calendar) - cfg.CORRIDOR_EPS
+
+    return u_butterfly - cfg.CORRIDOR_EPS
+
+
+def _compute_psi_upper_bound(rho: float, theta_star: float) -> float:
+    """Maximum ψ from butterfly bounds alone (for search range)."""
+    # Upper bound from B1: ψ(1+|ρ|) ≤ 4
+    return cfg.U_BF1_FACTOR / (1.0 + _abs_rho(rho))
+
+
+def _brent_root(f, a: float, b: float, xtol: float = 1e-10, maxiter: int = 100) -> float:
+    """Find root of f(x) = 0 in [a, b] using Brent's method."""
+    try:
+        from scipy.optimize import brentq
+        return brentq(f, a, b, xtol=xtol, maxiter=maxiter)
+    except (ImportError, ValueError):
+        # Fallback: bisection
+        fa = f(a)
+        fb = f(b)
+        if fa * fb > 0:
+            return b
+        for _ in range(maxiter):
+            c = (a + b) / 2
+            fc = f(c)
+            if abs(fc) < xtol or (b - a) < xtol:
+                return c
+            if fa * fc <= 0:
+                b = c
+                fb = fc
+            else:
+                a = c
+                fa = fc
+        return (a + b) / 2
+
+
+def _find_feasible_psi_intervals(
+    rho: float,
+    prev_slice: dict[str, float] | None,
+    k_star: float,
+    theta_star: float,
+    l_psi: float | None,
+) -> list[tuple[float, float]]:
+    """
+    Find ALL ψ intervals where U_ψ(ψ) ≥ L_ψ.
+    U_ψ is non-monotonic because θ(ψ) is convex (Blueprint §8.4).
+    """
+    if l_psi is None:
+        return []  # Empty corridor (Case A infeasible)
+
+    psi_min = max(l_psi, 1e-6)
+    psi_max = _compute_psi_upper_bound(rho, theta_star)
+
+    if psi_min >= psi_max:
+        return []
+
+    # Sample U_ψ on dense log grid
+    n_samples = cfg.U_PSI_GRID_POINTS
+    psi_grid = np.logspace(np.log10(psi_min), np.log10(psi_max), n_samples)
+
+    U_vals = np.array([
+        _compute_U_psi(rho, psi, prev_slice, k_star, theta_star)
+        for psi in psi_grid
+    ])
+
+    # f(ψ) = U_ψ(ψ) - L_ψ
+    f_vals = U_vals - l_psi
+
+    # Find ALL sign changes and intervals
+    intervals = []
+    in_feasible = False
+    interval_start = None
+
+    for i in range(len(psi_grid)):
+        feasible = f_vals[i] >= 0
+
+        if feasible and not in_feasible:
+            # Entering feasible region
+            in_feasible = True
+            if i == 0:
+                interval_start = psi_grid[i]
+            else:
+                # Find exact crossing using bisection
+                lo = psi_grid[i - 1]
+                hi = psi_grid[i]
+                interval_start = _brent_root(
+                    lambda p: _compute_U_psi(rho, p, prev_slice, k_star, theta_star) - l_psi,
+                    lo, hi
+                )
+        elif not feasible and in_feasible:
+            # Exiting feasible region
+            in_feasible = False
+            if interval_start is not None:
+                lo = psi_grid[i - 1]
+                hi = psi_grid[i]
+                interval_end = _brent_root(
+                    lambda p: _compute_U_psi(rho, p, prev_slice, k_star, theta_star) - l_psi,
+                    lo, hi
+                )
+                intervals.append((interval_start, interval_end))
+                interval_start = None
+
+    # If still in feasible region at end
+    if in_feasible and interval_start is not None:
+        intervals.append((interval_start, psi_max))
+
+    # Filter: only keep intervals with width > tolerance
+    intervals = [(lo, hi) for lo, hi in intervals if hi - lo > 1e-8]
+
+    return intervals
 
 
 def _psi(theta: float, phi: float) -> float:
@@ -67,64 +298,53 @@ def solve_anchor_theta(
     return min(positive, key=lambda r: abs(r - theta_star))
 
 
-def _mm_l2(abs_rho: float) -> float:
-    if abs_rho >= 1.0:
-        return 0.0
-    return 1.0 / math.tan(math.acos(-abs_rho) / 3.0)
-
-
-def _mm_objective_grid(
-    l: np.ndarray,
-    theta: float,
-    abs_rho: float,
-) -> np.ndarray:
-    """Vectorized ℱ_MM integrand over l-grid."""
-    if abs_rho >= 1.0:
-        return np.full_like(l, np.inf, dtype=float)
-
-    sqrt_1mr2 = math.sqrt(1.0 - abs_rho * abs_rho)
-    n_val = sqrt_1mr2 + abs_rho * l + np.sqrt(l * l + 1.0)
-    n_prime = abs_rho + l / np.sqrt(l * l + 1.0)
-    n_double_prime = 1.0 / (l * l + 1.0) ** 1.5
-
-    g_val = n_prime / 4.0
-    h_val = 1.0 - (l - abs_rho / sqrt_1mr2) * n_prime / (2.0 * n_val)
-    g2_val = n_double_prime - n_prime * n_prime / (2.0 * n_val)
-
-    denom = theta * sqrt_1mr2 * g_val * g_val - g2_val
-    with np.errstate(divide="ignore", invalid="ignore"):
-        numer = 4.0 * theta * sqrt_1mr2 * h_val * h_val
-        out = np.where(denom > 0.0, numer / denom, np.inf)
-    return out
-
-
-def compute_f_MM(
-    theta: float,
-    abs_rho: float,
-    n_grid: int | None = None,
-) -> float:
+def compute_f_MM(theta: float, abs_rho: float, n_grid: int | None = None) -> float:
     """
-    Compute ℱ_MM(θ, |ρ|) = inf_{l > l₂(|ρ|)} f(θ, |ρ|, l) via dense l-grid scan.
+    Martini-Mingone butterfly boundary ℱ_MM(θ, |ρ|).
+    Bilinear interpolation on precomputed table.
     """
+    if not _MM_TABLE_BUILT:
+        _build_mm_table()
+
     if theta <= 0.0:
         return 0.0
 
     if abs_rho >= 1.0:
         return 4.0 * theta / (1.0 + abs_rho)
 
-    grid_points = n_grid if n_grid is not None else cfg.MM_L_GRID_POINTS
-    l2 = _mm_l2(abs_rho)
-    l_start = l2 + max(cfg.MM_L2_TOL, 1e-8)
-    l_end = cfg.MM_L_MAX
-    if l_start >= l_end:
-        return 4.0 * theta / (1.0 + abs_rho)
+    # Clamp to grid bounds
+    theta_clamped = np.clip(theta, _MM_THETA_MIN, _MM_THETA_MAX)
+    rho_clamped = np.clip(abs_rho, 0, _MM_RHO_MAX)
 
-    l_grid = np.linspace(l_start, l_end, grid_points)
-    values = _mm_objective_grid(l_grid, theta, abs_rho)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return 4.0 * theta / (1.0 + abs_rho)
-    return float(np.min(finite))
+    # Find indices
+    i = np.searchsorted(_MM_THETA_GRID, theta_clamped) - 1
+    j = np.searchsorted(_MM_RHO_GRID, rho_clamped) - 1
+
+    # Clamp indices to valid range
+    i = np.clip(i, 0, _MM_THETA_N - 2)
+    j = np.clip(j, 0, _MM_RHO_N - 2)
+
+    # Bilinear interpolation on log(theta), rho
+    log_theta = np.log(theta_clamped)
+    log_t0 = np.log(_MM_THETA_GRID[i])
+    log_t1 = np.log(_MM_THETA_GRID[i + 1])
+    r0 = _MM_RHO_GRID[j]
+    r1 = _MM_RHO_GRID[j + 1]
+
+    # Weights
+    wt = (log_theta - log_t0) / (log_t1 - log_t0)
+    wr = (rho_clamped - r0) / (r1 - r0)
+
+    # Four corners
+    v00 = _MM_TABLE[i, j]
+    v01 = _MM_TABLE[i, j + 1]
+    v10 = _MM_TABLE[i + 1, j]
+    v11 = _MM_TABLE[i + 1, j + 1]
+
+    # Bilinear interpolation
+    v0 = v00 + wr * (v01 - v00)
+    v1 = v10 + wr * (v11 - v10)
+    return float(v0 + wt * (v1 - v0))
 
 
 def check_butterfly_gj(theta: float, phi: float, rho: float) -> tuple[bool, str]:
@@ -194,47 +414,67 @@ def check_butterfly(theta: float, phi: float, rho: float) -> tuple[bool, str]:
 
 
 def check_calendar_pasquazzi(
-    params1: dict[str, float],
-    params2: dict[str, float],
+    theta1: float, psi1: float, rho1: float,
+    theta2: float, psi2: float, rho2: float
 ) -> tuple[bool, str]:
     """
-    Pasquazzi 2023 Proposition 13 calendar condition.
+    Pasquazzi 2023 Proposition 13 — Necessary & sufficient calendar no-arb.
+    Returns (feasible, reason).
 
-    params1 = nearer maturity (T1), params2 = farther maturity (T2).
+    Args:
+        theta1, psi1, rho1: Nearer maturity (T1) parameters
+        theta2, psi2, rho2: Farther maturity (T2) parameters
     """
-    theta1 = float(params1["theta"])
-    phi1 = float(params1["phi"])
-    rho1 = float(params1["rho"])
-    theta2 = float(params2["theta"])
-    phi2 = float(params2["phi"])
-    rho2 = float(params2["rho"])
-
-    if theta1 <= 0.0 or theta2 <= 0.0 or phi1 <= 0.0 or phi2 <= 0.0:
-        return False, "non-positive slice parameters"
-
     theta_ratio = theta2 / theta1
-    phi_ratio = phi2 / phi1
-    tol = cfg.KILL_TOL_CALENDAR
+    phi1 = psi1 / theta1 if theta1 > 0 else 0
+    phi2 = psi2 / theta2 if theta2 > 0 else 0
+    Phi = phi2 / phi1 if phi1 > 0 else np.inf
 
-    if theta_ratio < 1.0 - tol:
-        return False, f"Theta ratio violated: Theta={theta_ratio:.6g} < 1"
+    # --- CASE A: Θ ≈ 1 ---
+    if abs(theta_ratio - 1.0) <= cfg.PASQUAZZI_THETA_TOL:
+        # Feasible ONLY if:
+        # (i) ρ₁ = ρ₂ = 0 (both zero) AND Φ ≥ 1
+        # (ii) ρ₁ = ρ₂ ≠ 0 AND Φ = 1
+        if abs(rho1) < _PASQUAZZI_RHO_TOL and abs(rho2) < _PASQUAZZI_RHO_TOL:
+            if Phi >= 1.0 - _PASQUAZZI_PHI_TOL:
+                return True, "Case A(i): ρ₁=ρ₂=0, Φ≥1"
+            return False, f"Case A(i): ρ₁=ρ₂=0 but Φ={Phi:.6f}<1"
 
-    theta_phi = theta_ratio * phi_ratio
-    delta_rho = abs(rho2 - rho1)
-    stripe = theta_phi * delta_rho
-    abs_one_minus = abs(1.0 - theta_phi)
-    upper = theta_phi - 1.0
+        if abs(rho1 - rho2) < _PASQUAZZI_RHO_TOL:
+            if abs(Phi - 1.0) < _PASQUAZZI_PHI_TOL:
+                return True, "Case A(ii): ρ₁=ρ₂, Φ=1"
+            return False, f"Case A(ii): ρ₁=ρ₂ but Φ={Phi:.6f}≠1"
 
-    if stripe < abs_one_minus - tol:
-        return False, (
-            f"calendar stripe lower violated: Theta*Phi*|drho|={stripe:.6g} "
-            f"< |1-Theta*Phi|={abs_one_minus:.6g}"
-        )
-    if stripe > upper + tol:
-        return False, (
-            f"calendar stripe upper violated: Theta*Phi*|drho|={stripe:.6g} "
-            f"> Theta*Phi-1={upper:.6g}"
-        )
+        # ρ₁ ≠ ρ₂ and not both zero → INFEASIBLE
+        return False, f"Case A: Θ≈1 but ρ₁={rho1:.4f}≠ρ₂={rho2:.4f} and not both zero"
+
+    # --- CASE B: Θ > 1 (theta2 > theta1) ---
+    if theta_ratio > 1.0:
+        return _check_hm_stripe(theta1, psi1, rho1, theta2, psi2, rho2)
+
+    # --- CASE C: Θ < 1 (theta2 < theta1) ---
+    # Symmetric to Case B
+    return _check_hm_stripe(theta2, psi2, rho2, theta1, psi1, rho1)
+
+
+def _check_hm_stripe(
+    theta_small: float, psi_small: float, rho_small: float,
+    theta_large: float, psi_large: float, rho_large: float
+) -> tuple[bool, str]:
+    """Hendriks-Martini stripe conditions for Θ ≠ 1."""
+    phi_small = psi_small / theta_small if theta_small > 0 else 0
+    phi_large = psi_large / theta_large if theta_large > 0 else 0
+    Phi = phi_large / phi_small if phi_small > 0 else np.inf
+
+    # Conditions from Hendriks-Martini 2019
+    # 1. Θ ≥ 1 (already satisfied by caller)
+    # 2. Φ ≥ 1
+    if Phi < 1.0 - cfg.KILL_TOL_CALENDAR:
+        return False, f"HM stripe: Φ={Phi:.6f} < 1"
+
+    # 3. ρ bounds
+    if abs(rho_small - rho_large) > cfg.KILL_TOL_CALENDAR:
+        return False, f"HM stripe: |ρ₁-ρ₂|={abs(rho_small - rho_large):.6f} > tol"
 
     return True, ""
 
@@ -309,43 +549,38 @@ def _butterfly_upper_psi(theta: float, abs_rho: float) -> float:
     raise AssertionError(f"Unhandled BUTTERFLY_BOUND_MODE: {mode}")
 
 
-def _upper_psi_of_psi(
-    psi: float,
-    rho: float,
-    k_star: float,
-    theta_star: float,
-    prev_slice: dict[str, float] | None,
-) -> float:
-    """U_ψ(ψ) from plan §8.3."""
-    theta = theta_from_psi(psi, rho, k_star, theta_star)
-    if theta <= 0.0:
-        return -1.0
-
-    abs_r = _abs_rho(rho)
-    u_butterfly = _butterfly_upper_psi(theta, abs_r)
-
-    if prev_slice is not None:
-        theta_prev = float(prev_slice["theta"])
-        psi_prev = float(prev_slice["theta"]) * float(prev_slice["phi"])
-        u_calendar = psi_prev * theta / theta_prev
-        u_val = min(u_butterfly, u_calendar) - cfg.CORRIDOR_EPS
-    else:
-        u_val = u_butterfly - cfg.CORRIDOR_EPS
-
-    return u_val
-
-
 def _compute_L_psi(
     rho: float,
-    prev_slice: dict[str, float],
+    prev_slice: dict[str, float] | None,
     k_star: float,
     theta_star: float,
-) -> float:
-    """Lower ψ bound from calendar + θ-monotonicity (plan §8.4)."""
-    theta_prev = float(prev_slice["theta"])
-    rho_prev = float(prev_slice["rho"])
-    psi_prev = float(prev_slice["theta"]) * float(prev_slice["phi"])
+) -> float | None:
+    """
+    Blueprint §8.2: Lower bound on ψ from calendar arbitrage.
+    Returns None if infeasible (empty corridor).
+    """
+    if prev_slice is None:
+        return 0.0
 
+    theta_prev = float(prev_slice["theta"])
+    psi_prev = float(prev_slice["theta"]) * float(prev_slice["phi"])
+    rho_prev = float(prev_slice["rho"])
+
+    theta_ratio = theta_star / theta_prev
+
+    # --- Case A: Θ ≈ 1 ---
+    if abs(theta_ratio - 1.0) <= cfg.PASQUAZZI_THETA_TOL:
+        # Feasible only if:
+        if abs(rho) < _PASQUAZZI_RHO_TOL and abs(rho_prev) < _PASQUAZZI_RHO_TOL:
+            return 0.0  # Both zero → any ψ ≥ 0
+
+        if abs(rho - rho_prev) < _PASQUAZZI_RHO_TOL:
+            return psi_prev  # Must match exactly (Φ=1)
+
+        # ρ ≠ ρ_prev and not both zero → INFEASIBLE
+        return None
+
+    # --- Case B/C: Use Hendriks-Martini boundary ---
     bound1 = (
         psi_prev * (1.0 - rho_prev) / (1.0 - rho)
         if rho < 1.0 - _RHO_BOUND_TOL
@@ -374,46 +609,6 @@ def _compute_L_psi(
         l_theta_mono = max(root2, cfg.CORRIDOR_EPS)
 
     return max(l_cal_skew, l_theta_mono, cfg.CORRIDOR_EPS)
-
-
-def _find_feasible_psi_intervals(
-    rho: float,
-    prev_slice: dict[str, float] | None,
-    k_star: float,
-    theta_star: float,
-    l_psi: float,
-) -> list[tuple[float, float]]:
-    """Find intervals where U_ψ(ψ) >= L_ψ (plan §8.4)."""
-    if l_psi >= cfg.U_PSI_MAX:
-        return []
-
-    psi_start = max(l_psi, cfg.CORRIDOR_EPS)
-    psi_grid = np.logspace(
-        math.log10(psi_start),
-        math.log10(cfg.U_PSI_MAX),
-        cfg.U_PSI_GRID_POINTS,
-    )
-
-    intervals: list[tuple[float, float]] = []
-    in_feasible = False
-    interval_start: float | None = None
-
-    for psi in psi_grid:
-        upper = _upper_psi_of_psi(psi, rho, k_star, theta_star, prev_slice)
-        feasible = upper > 0.0 and l_psi <= psi <= upper
-        if feasible and not in_feasible:
-            in_feasible = True
-            interval_start = float(psi)
-        elif not feasible and in_feasible:
-            in_feasible = False
-            if interval_start is not None:
-                intervals.append((interval_start, float(psi)))
-            interval_start = None
-
-    if in_feasible and interval_start is not None:
-        intervals.append((interval_start, float(psi_grid[-1])))
-
-    return intervals
 
 
 def _theta_lower_bounds_at_phi(
@@ -493,7 +688,7 @@ def build_corridor(
         l_psi = cfg.CORRIDOR_EPS
     else:
         l_psi = _compute_L_psi(rho, prev_slice_params, k_star, theta_star)
-        if math.isinf(l_psi):
+        if l_psi is None or math.isinf(l_psi):
             return _empty_corridor(["calendar_lower_infeasible"])
 
     intervals = _find_feasible_psi_intervals(
