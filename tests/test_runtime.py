@@ -169,7 +169,7 @@ def test_calibrate_minute_no_trade_skips():
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_pass())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_calibrate_minute_success(mock_load, mock_calibrate, _mock_audit):
     ts = _ts(10, 30)
     minute = _mock_minute_result(ts)
@@ -189,7 +189,7 @@ def test_calibrate_minute_success(mock_load, mock_calibrate, _mock_audit):
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_fail())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_calibrate_minute_kill_switch_reuses_prior(mock_load, mock_calibrate, _mock_audit):
     ts = _ts(10, 31)
     prior_ts = _ts(10, 30)
@@ -215,7 +215,7 @@ def test_calibrate_minute_kill_switch_reuses_prior(mock_load, mock_calibrate, _m
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_fail())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_calibrate_minute_kill_switch_no_prior(mock_load, mock_calibrate, _mock_audit):
     ts = _ts(10, 30)
     mock_load.return_value = _mock_loader_df()
@@ -232,7 +232,7 @@ def test_calibrate_minute_kill_switch_no_prior(mock_load, mock_calibrate, _mock_
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_pass())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_cold_start_resets_prior(mock_load, mock_calibrate, _mock_audit):
     ts = _ts(10, 30)
     mock_load.return_value = _mock_loader_df()
@@ -249,7 +249,7 @@ def test_cold_start_resets_prior(mock_load, mock_calibrate, _mock_audit):
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_pass())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_cold_start_consumed(mock_load, mock_calibrate, _mock_audit):
     ts1 = _ts(10, 30)
     ts2 = _ts(10, 31)
@@ -278,7 +278,7 @@ def test_stale_surface_detection():
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_pass())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_state_transitions(mock_load, mock_calibrate, _mock_audit):
     ts = _ts(11, 0)
     minute = _mock_minute_result(ts)
@@ -298,7 +298,7 @@ def test_state_transitions(mock_load, mock_calibrate, _mock_audit):
 
 @patch("essvi.runtime.audit.run_full_audit", return_value=_mock_audit_pass())
 @patch("essvi.runtime.sequential.calibrate_one_minute")
-@patch("essvi.runtime.loader.load_minute")
+@patch("essvi.runtime.loader.load_minute_slice")
 def test_batch_calibration_iterates_all_minutes(mock_load, mock_calibrate, _mock_audit):
     start = _ts(10, 30)
     end = _ts(10, 32)

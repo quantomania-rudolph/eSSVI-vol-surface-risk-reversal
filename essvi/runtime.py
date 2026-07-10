@@ -207,7 +207,7 @@ def calibrate_minute(
             "session_phase": session_phase,
         }
 
-    df = loader.load_minute(ts, conn)
+    df = loader.load_minute_slice(ts, conn)
     n_valid_slices = _count_valid_expiry_slices(df)
     if n_valid_slices < cfg.MIN_STRIKES_PER_SLICE:
         logger.info(

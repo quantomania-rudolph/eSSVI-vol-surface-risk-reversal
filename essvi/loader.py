@@ -182,9 +182,11 @@ def _compute_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     # slice_strike_count: count unique strikes per expiration
     slice_stats = df.groupby("expiration").agg(
         slice_strike_count=("strike", "nunique"),
-        # anchor_k_star: belly strike = strike closest to forward (min |log_moneyness|)
-        anchor_k_star=("log_moneyness", lambda x: x.abs().idxmin()),
     ).reset_index()
+    
+    # anchor_k_star: belly strike = log_moneyness closest to forward (min |log_moneyness|)
+    idx_min_abs_logm = df.groupby("expiration")["log_moneyness"].apply(lambda x: x.abs().idxmin())
+    slice_stats["anchor_k_star"] = df.loc[idx_min_abs_logm.values, "log_moneyness"].values
     
     # anchor_theta_star: ATM total variance per slice
     # For each expiration, find row with min |log_moneyness|, get w = iv^2 * business_t
