@@ -217,9 +217,17 @@ def extract_anchor_params(df_slice: pd.DataFrame) -> AnchorParams:
     Anchor is INDEPENDENT of (rho, psi) — computed ONCE per slice.
     The solver will compute theta_t(psi, rho) using constraints.theta_from_psi.
     """
-    # 1. Filter to standard belly region using the belly_mask function
-    std_belly_mask_arr = belly_mask(df_slice)
+    # 1. Filter to standard belly region using the belly_flag column if available,
+    #    otherwise compute it using belly_mask function
+    if "belly_flag" in df_slice.columns:
+        std_belly_mask_arr = df_slice["belly_flag"].astype(bool).to_numpy()
+    else:
+        std_belly_mask_arr = belly_mask(df_slice)
     std_belly = df_slice[std_belly_mask_arr].copy()
+
+    # Apply valid row mask to filter out rows with invalid data (e.g., IV below MIN_IV)
+    valid_mask = _valid_row_mask(std_belly)
+    std_belly = std_belly[valid_mask].copy()
 
     # 2. Check if standard belly has >= 3 strikes
     has_std_belly = len(std_belly) >= 3
@@ -232,9 +240,13 @@ def extract_anchor_params(df_slice: pd.DataFrame) -> AnchorParams:
         has_relaxed = relaxed.any()
         if has_relaxed:
             belly = df_slice[relaxed].copy()
+            valid_mask = _valid_row_mask(belly)
+            belly = belly[valid_mask].copy()
         else:
             # Final fallback: use all OTM or all available
             belly = df_slice[df_slice.get("OTM", True)].copy() if "OTM" in df_slice.columns else df_slice.copy()
+            valid_mask = _valid_row_mask(belly)
+            belly = belly[valid_mask].copy()
 
     if len(belly) == 0:
         raise AnchorError("No OTM/belly options in slice")
