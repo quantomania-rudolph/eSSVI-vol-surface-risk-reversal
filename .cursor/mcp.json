@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "rlm-recursive-language-models": {
+      "command": "python",
+      "args": [
+        "c:\\Users\\Rudol\\Desktop\\ThetaData_greeks\\prime_intellect_experiment\\rlm-mcp-server\\src\\server.py",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "RLM_MODEL": "gpt-4o-mini",
+        "RLM_MAX_ITERATIONS": "15"
+      }
+    }
+  }
+}

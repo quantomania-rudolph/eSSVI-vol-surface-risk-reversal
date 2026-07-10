@@ -1,0 +1,6 @@
+# Core Engine Requirements
+aiohttp>=3.9.0
+asyncpg>=0.29.0
+numpy>=1.26.0
+pandas>=2.0.0
+pytz>=2024.1

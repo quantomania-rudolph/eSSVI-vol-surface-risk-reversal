@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+theta_data_core_engine.egg-info/PKG-INFO
+theta_data_core_engine.egg-info/SOURCES.txt
+theta_data_core_engine.egg-info/dependency_links.txt
+theta_data_core_engine.egg-info/requires.txt
+theta_data_core_engine.egg-info/top_level.txt

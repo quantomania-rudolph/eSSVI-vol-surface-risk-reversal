@@ -1,0 +1,293 @@
+{
+  "agent_id": "w_last_verification",
+  "verify_phase3": "PARTIAL",
+  "pytest": "PASS",
+  "mypy": "SKIPPED",
+  "flake8": "FAIL",
+  "findings": {
+    "total": 46,
+    "passed": 46,
+    "failed": 0,
+    "skipped": 0
+  },
+  "failed_checks": [],
+  "overall": "PASS",
+  "details": [
+    {
+      "index": 1,
+      "name": "C1: Tenor-matched rates",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 2,
+      "name": "C2: Rate decimal conversion",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 3,
+      "name": "C3: Half-day=210",
+      "status": "PASS",
+      "detail": "actual: 210.0 min"
+    },
+    {
+      "index": 4,
+      "name": "C4: No double-exclude",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 5,
+      "name": "C5: Pre-open T=0",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 6,
+      "name": "C6: Reject_detail meaningful",
+      "status": "PASS",
+      "detail": "Found 14 reject_detail lines; first 3 joined='        quarantine_df has all original columns plus reject_code, reject_detail,     failing[\"reject_detail\"] = \"DTE=\" + dte_val.loc[failing.index].astype(str) + \", min=7, max=90\"     failing[\"reject_d'"
+    },
+    {
+      "index": 7,
+      "name": "C7: run_id in clean_option_chain",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 8,
+      "name": "C8: STK_SEM default 10",
+      "status": "PASS",
+      "detail": "actual: 10"
+    },
+    {
+      "index": 9,
+      "name": "H9: Vega validation",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 10,
+      "name": "H10: interval in config",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 11,
+      "name": "H10b: fetcher uses cfg",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 12,
+      "name": "H11: dividend in config",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 13,
+      "name": "H12: _phase not in COLUMN_MAP",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 14,
+      "name": "H13: Contract filtering",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 15,
+      "name": "H14: Per-chunk rates cache",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 16,
+      "name": "H15: Pre-filter at fetch",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 17,
+      "name": "H16: Cleaning order",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 18,
+      "name": "H17: Subpenny EPS",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 19,
+      "name": "H18: BAD_MID exists",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 20,
+      "name": "H19: OI column guard",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 21,
+      "name": "H20: NaN spot guard",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 22,
+      "name": "H21: Dividend assertion",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 23,
+      "name": "H22: Vega parallel",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 24,
+      "name": "H23: Vega units doc",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 25,
+      "name": "H24: underlying_timestamp in COLUMN_MAP",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 26,
+      "name": "H25: Explicit ON CONFLICT",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 27,
+      "name": "H26: Watermark PK run_id",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 28,
+      "name": "H27: Staging INCLUDING DEFAULTS",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 29,
+      "name": "M29: FETCH_NON_RETRYABLE_STATUS used",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 30,
+      "name": "M30: SUBPENNY_EPS used",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 31,
+      "name": "M31: NUMBA_EPS used",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 32,
+      "name": "M32: skip_reason",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 33,
+      "name": "M33: Cache asyncio.Lock",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 34,
+      "name": "M34: No utcnow",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 35,
+      "name": "M35: Spot no ffill",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 36,
+      "name": "M36: OI mode config",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 37,
+      "name": "M37: No per-row calendar",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 38,
+      "name": "M38: Robust next_date",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 39,
+      "name": "M39: Trading-day chunking",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 40,
+      "name": "M40: log_moneyness in COLUMN_MAP",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 41,
+      "name": "M41: UTC end_date",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 45,
+      "name": "L45: Sync wrapper safe",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 46,
+      "name": "L46: Parse date order",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 47,
+      "name": "L47: Logging numpy safe",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 48,
+      "name": "L48: Quality flag constants",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "index": 49,
+      "name": "L49: COLUMN_MAP clean",
+      "status": "PASS",
+      "detail": ""
+    }
+  ]
+}

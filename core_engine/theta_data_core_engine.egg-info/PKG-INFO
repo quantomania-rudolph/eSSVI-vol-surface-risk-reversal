@@ -1,0 +1,206 @@
+Metadata-Version: 2.4
+Name: theta-data-core-engine
+Version: 1.0.0
+Summary: Minimal Theta Data Terminal v3 REST API client
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: aiohttp>=3.9.0
+Requires-Dist: asyncpg>=0.29.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: pytz>=2024.1
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+
+# Theta Data Core Engine
+
+Minimal, clean Python library for connecting to **Theta Data Terminal v3** local REST API.
+
+## What This Is
+
+A stripped-down, production-ready core engine that:
+- Connects to Theta Terminal v3 (local Java app running on `http://127.0.0.1:25510`)
+- Provides async HTTP client with proper concurrency controls (respects PRO tier limits)
+- Exposes high-level fetchers for all key Theta Data v3 endpoints
+- Handles retries, rate limiting, and response parsing automatically
+
+## What This Is NOT
+
+- No database persistence layer (optional logging only)
+- No backfill/derivation pipelines
+- No Jupyter notebooks
+- No PowerShell setup scripts
+- No universe management (SP500 CSV, etc.)
+- No quality gates, corporate actions, or pricing models
+
+## Installation
+
+```bash
+cd core_engine
+pip install -r requirements.txt
+```
+
+## Prerequisites
+
+1. **Theta Terminal v3 running locally:**
+   ```bash
+   # Download JAR from https://download-unstable.thetadata.us/ThetaTerminalv3.jar
+   java -jar ThetaTerminalv3.jar
+   ```
+
+2. **Valid Theta Data credentials** in `creds.txt` (email on line 1, password on line 2)
+
+3. **Active Theta Data subscription** with access to desired datasets
+
+## Quick Start
+
+```python
+import asyncio
+from core_engine.shared.config import CFG
+from core_engine.shared.theta_client import AsyncThetaClient, heartbeat
+from core_engine.shared.fetchers import ThetaFetchers
+
+async def main():
+    # 1. Verify terminal is running
+    heartbeat()  # Raises ThetaTerminalDown if unreachable
+    
+    # 2. Create client and fetchers
+    async with AsyncThetaClient() as client:
+        fetchers = ThetaFetchers(client)
+        
+        # Get spot price
+        spot = await fetchers.spot_price("SPY", is_index=False)
+        
+        # Get option chain with Greeks
+        expirations = await fetchers.list_expirations("SPY")
+        chain = await fetchers.option_chain_greeks_snapshot(
+            "SPY", expirations[0], annual_div=0.0, spot=spot
+        )
+        
+        print(chain.head())
+
+asyncio.run(main())
+```
+
+## API Reference
+
+### `core_engine.shared.config.CFG`
+Global configuration singleton. All settings via environment variables.
+
+Key settings:
+- `THETA_HOST`, `THETA_PORT` - Terminal address
+- `THETA_TIER` - FREE/VALUE/STANDARD/PRO (controls concurrency limits)
+- `MAX_CONCURRENT_REQUESTS` - Max simultaneous requests (default 7 for PRO)
+- `REQUESTS_PER_SECOND` - Rate limit (0 = unlimited)
+
+### `core_engine.shared.theta_client.AsyncThetaClient`
+Low-level async HTTP client with:
+- Semaphore-based concurrency control
+- Token bucket rate limiting
+- Automatic retries with exponential backoff
+- Optional ingestion logging to PostgreSQL
+
+```python
+async with AsyncThetaClient(cfg) as client:
+    status, data = await client.get("/v3/stock/snapshot/quote", {"symbol": "SPY"})
+```
+
+### `core_engine.shared.fetchers.ThetaFetchers`
+High-level typed fetchers for all endpoints:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `spot_price(symbol, is_index)` | `/v3/stock/snapshot/quote` or `/v3/index/snapshot/price` | Current mid price |
+| `index_snapshot_price(symbol)` | `/v3/index/snapshot/price` | Index level |
+| `list_expirations(symbol)` | `/v3/option/list/expirations` | Available expiration dates |
+| `option_chain_greeks_snapshot(...)` | `/v3/option/snapshot/greeks/all` | Full chain with Greeks |
+| `option_chain_greeks_history(...)` | `/v3/option/history/greeks/all` | Historical 5-min bars |
+| `option_trades_snapshot(...)` | `/v3/option/snapshot/trade` | Latest trades |
+| `risk_free_rate_cc(tenor_days)` | `/v3/stock/history/rate` | Continuously compounded rate |
+| `annual_dividend_amount(symbol)` | `/v3/stock/history/dividend` | Trailing 12M dividends |
+| `dividend_yield(symbol, spot)` | Computed | Annual div / spot |
+| `stock_splits(symbol)` | `/v3/stock/history/split` | Split history |
+| `nearest_expirations(symbol, as_of, n)` | Computed | Next N expirations |
+
+## Configuration
+
+Copy `ENV.example` to `.env` and customize:
+
+```bash
+THETA_HOST=127.0.0.1
+THETA_PORT=25510
+THETA_TIER=PRO
+MAX_CONCURRENT_REQUESTS=7
+```
+
+Or set environment variables directly.
+
+## Concurrency Limits by Tier
+
+| Tier | Max Concurrent | Recommended Setting |
+|------|---------------|---------------------|
+| FREE | 1 | 1 |
+| VALUE | 2 | 2 |
+| STANDARD | 4 | 4 |
+| PRO | 8 | 7 (leave 1 for heartbeat) |
+
+The client validates `MAX_CONCURRENT_REQUESTS` against your tier on startup.
+
+## Error Handling
+
+- `ThetaTerminalDown` - Terminal unreachable (raised by `heartbeat()`)
+- HTTP errors returned as `(status, {"error": "...", "status": N})` tuples
+- Network errors trigger automatic retries (3 attempts with backoff)
+- Set `REQUESTS_PER_SECOND` > 0 to enable client-side rate limiting
+
+## Optional: Ingestion Logging
+
+For production monitoring, pass a database connection:
+
+```python
+import asyncpg
+from core_engine.shared.db import IngestionLogger
+
+pool = await asyncpg.create_pool(dsn)
+logger = IngestionLogger()
+
+async with AsyncThetaClient(cfg, logger) as client:
+    async with pool.acquire() as conn:
+        client.bind_log_connection(conn)
+        # ... use client
+        
+        # Flush on exit
+        await logger.flush(conn)
+```
+
+Requires PostgreSQL with `ingestion_log` table (see `sql/init_schema.sql` for schema).
+
+## Running the Example
+
+```bash
+# Terminal 1: Start Theta Terminal
+java -jar ThetaTerminalv3.jar
+
+# Terminal 2: Run demo
+cd core_engine
+python example_usage.py
+```
+
+## Theta Terminal v3 Endpoints Used
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/v3/stock/snapshot/quote` | Stock spot price |
+| `/v3/index/snapshot/price` | Index level |
+| `/v3/option/list/expirations` | Option expirations |
+| `/v3/option/snapshot/greeks/all` | Snapshot chain + Greeks |
+| `/v3/option/history/greeks/all` | Historical 5-min bars |
+| `/v3/option/snapshot/trade` | Latest trades |
+| `/v3/stock/history/rate` | Risk-free rate |
+| `/v3/stock/history/dividend` | Dividend history |
+| `/v3/stock/history/split` | Split history |
+
+## License
+
+Internal use only. Requires active Theta Data subscription.
