@@ -27,11 +27,11 @@ def theta_from_psi(
     k_star: float,
     theta_star: float,
 ) -> float:
-    """Exact anchor relation θ_t(ψ) from plan §8.1."""
+    """Exact anchor relation θ_t(ψ) from plan §8.1 (Corbetta Eq 3.12)."""
     return (
         theta_star
         - rho * psi * k_star
-        + psi * psi * k_star * k_star * (1.0 - rho * rho) / (4.0 * theta_star)
+        - psi * psi * k_star * k_star * (1.0 - rho * rho) / (4.0 * theta_star)
     )
 
 

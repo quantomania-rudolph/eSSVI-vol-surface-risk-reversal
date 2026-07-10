@@ -25,6 +25,9 @@ BELLY_K_ABS: Final[float] = 0.15
 # Slice requirements
 MIN_STRIKES_PER_SLICE: Final[int] = 3
 
+# Minimum implied volatility (filters zero/near-zero IV quotes)
+MIN_IV: Final[float] = 0.005
+
 # Vega weighting (eSSVI objective uses variance-space vega² by default)
 VEGA_WEIGHT_MODE: Final[str] = "var_vega2"  # var_vega2 | vol_vega1 | vol_vega2
 

@@ -10,13 +10,14 @@ import pandas as pd
 from scipy.optimize import minimize_scalar
 
 from essvi import config as cfg
-from essvi.anchor import extract_anchor_params
+from essvi.anchor import AnchorParams, compute_theta_t, extract_anchor_params
 from essvi.constraints import (
     build_corridor,
     check_butterfly,
     check_calendar_pasquazzi,
     check_lee_bound,
     check_vertical_spread,
+    theta_from_psi,
 )
 from essvi.objective import objective_slice
 from essvi.regularize import spatial_reg_penalty
@@ -104,12 +105,26 @@ def _evaluate_at_phi(
     k: np.ndarray,
     w: np.ndarray,
     vega: np.ndarray,
-) -> tuple[float, float, dict[str, Any]]:
+    anchor: AnchorParams,
+) -> tuple[float, float, AnchorParams]:
     if phi < corridor["phi_min"] or phi > corridor["phi_max"]:
-        return float("inf"), float("nan"), {}
+        return float("inf"), float("nan"), anchor
 
-    anchor = extract_anchor_params(df_slice, phi, rho)
-    theta = float(anchor["theta_star"])
+    # Compute psi = theta * phi. We need theta to compute psi, but theta depends on psi.
+    # Use theta_from_psi directly with the anchor params.
+    # For a given phi and rho, we need to solve for theta such that the slice passes through (k*, theta*).
+    # This is done via theta_from_psi(psi, rho, k_star, theta_star) where psi = theta * phi.
+    # This is a fixed-point problem. Use the exact closed-form from constraints.py:
+    # theta = theta_star - rho * psi * k_star + psi^2 * k_star^2 * (1 - rho^2) / (4 * theta_star)
+    # with psi = theta * phi.
+    # This is a quadratic in theta: a*theta^2 + b*theta + c = 0
+    # where a = (phi^2 * k_star^2 * (1 - rho^2)) / (4 * theta_star)
+    #       b = -(1 + rho * phi * k_star)
+    #       c = theta_star
+    
+    from essvi.constraints import solve_anchor_theta
+    theta = solve_anchor_theta(phi, rho, anchor.k_star, anchor.theta_star)
+    
     theta_min = corridor["theta_min_phi"](phi)
     if theta < theta_min:
         theta = theta_min
@@ -144,13 +159,17 @@ def _score_rho_candidate(
     *,
     use_brent: bool = False,
     n_phi_scan: int = 3,
-) -> tuple[float, float, float, float, dict[str, Any], dict[str, Any], int]:
+    anchor: AnchorParams | None = None,
+) -> tuple[float, float, float, float, dict[str, Any], AnchorParams, int]:
     corridor = build_corridor(rho, prev_slice_params, df_slice)
     if not corridor["valid"]:
-        return float("inf"), rho, float("nan"), float("nan"), corridor, {}, 0
+        return float("inf"), rho, float("nan"), float("nan"), corridor, AnchorParams(0, 0, "", 0), 0
+
+    if anchor is None:
+        anchor = extract_anchor_params(df_slice)
 
     if use_brent:
-        score, theta, phi, anchor, n_eval = _brent_phi_solve(
+        score, theta, phi, anchor_result, n_eval = _brent_phi_solve(
             rho,
             df_slice,
             corridor,
@@ -158,17 +177,18 @@ def _score_rho_candidate(
             k,
             w,
             vega,
+            anchor,
         )
-        return score, rho, theta, phi, corridor, anchor, n_eval
+        return score, rho, theta, phi, corridor, anchor_result, n_eval
 
     best_score = float("inf")
     best_theta = float("nan")
     best_phi = float("nan")
-    best_anchor: dict[str, Any] = {}
+    best_anchor: AnchorParams = anchor
     n_eval = 0
 
     for phi in _phi_scan_points(corridor, n_phi_scan):
-        score, theta, anchor = _evaluate_at_phi(
+        score, theta, anchor_result = _evaluate_at_phi(
             float(phi),
             rho,
             df_slice,
@@ -177,13 +197,14 @@ def _score_rho_candidate(
             k,
             w,
             vega,
+            anchor,
         )
         n_eval += 1
         if score < best_score:
             best_score = score
             best_theta = theta
             best_phi = float(phi)
-            best_anchor = anchor
+            best_anchor = anchor_result
 
     return best_score, rho, best_theta, best_phi, corridor, best_anchor, n_eval
 
@@ -196,7 +217,8 @@ def _brent_phi_solve(
     k: np.ndarray,
     w: np.ndarray,
     vega: np.ndarray,
-) -> tuple[float, float, float, dict[str, Any], int]:
+    anchor: AnchorParams,
+) -> tuple[float, float, float, AnchorParams, int]:
     phi_min = corridor["phi_min"]
     phi_max = corridor["phi_max"]
     n_eval = 0
@@ -213,6 +235,7 @@ def _brent_phi_solve(
             k,
             w,
             vega,
+            anchor,
         )
         return score
 
@@ -224,7 +247,7 @@ def _brent_phi_solve(
     )
 
     phi_opt = float(result.x)
-    score, theta, anchor = _evaluate_at_phi(
+    score, theta, anchor_result = _evaluate_at_phi(
         phi_opt,
         rho,
         df_slice,
@@ -233,8 +256,9 @@ def _brent_phi_solve(
         k,
         w,
         vega,
+        anchor,
     )
-    return score, theta, phi_opt, anchor, n_eval
+    return score, theta, phi_opt, anchor_result, n_eval
 
 
 def clamp_params(
@@ -345,13 +369,16 @@ def solve_single_slice(
 
     k, w, vega = _slice_arrays(df_slice)
     n_iterations = 0
-    candidates: list[tuple[float, float, float, float, dict[str, Any], dict[str, Any]]] = []
+    candidates: list[tuple[float, float, float, float, dict[str, Any], AnchorParams]] = []
+
+    # Extract anchor ONCE per slice (independent of rho, phi)
+    anchor = extract_anchor_params(df_slice)
 
     for rho in rho_grid:
         if rho_prev is not None and abs(float(rho) - rho_prev) > cfg.RHO_MAX_STEP + 1e-12:
             continue
 
-        score, rho_val, theta, phi, corridor, anchor, n_eval = _score_rho_candidate(
+        score, rho_val, theta, phi, corridor, anchor_result, n_eval = _score_rho_candidate(
             float(rho),
             df_slice,
             prev_slice_params,
@@ -359,17 +386,18 @@ def solve_single_slice(
             w,
             vega,
             use_brent=True,
+            anchor=anchor,
         )
         n_iterations += n_eval
         if math.isfinite(score):
-            candidates.append((score, rho_val, theta, phi, corridor, anchor))
+            candidates.append((score, rho_val, theta, phi, corridor, anchor_result))
 
     candidates.sort(key=lambda item: item[0])
     top_candidates = candidates[:_TOP_RHO_CANDIDATES]
 
-    refined: list[tuple[float, float, float, float, dict[str, Any], dict[str, Any]]] = []
-    for score, rho_val, theta, phi, corridor, anchor in top_candidates:
-        refined.append((score, rho_val, theta, phi, corridor, anchor))
+    refined: list[tuple[float, float, float, float, dict[str, Any], AnchorParams]] = []
+    for score, rho_val, theta, phi, corridor, anchor_result in top_candidates:
+        refined.append((score, rho_val, theta, phi, corridor, anchor_result))
         for rho_ref in refine_rho_grid(
             rho_val, cfg.RHO_GRID_STEP, cfg.RHO_GRID_REFINE_FACTOR
         ):
@@ -384,6 +412,7 @@ def solve_single_slice(
                     w,
                     vega,
                     use_brent=True,
+                    anchor=anchor,
                 )
             )
             n_iterations += n_eval
@@ -401,9 +430,9 @@ def solve_single_slice(
     best_theta = float("nan")
     best_phi = float("nan")
     best_corridor: dict[str, Any] = {}
-    best_anchor: dict[str, Any] = {}
+    best_anchor: AnchorParams = anchor
 
-    for score, rho_val, theta, phi, corridor, anchor in refined:
+    for score, rho_val, theta, phi, corridor, anchor_result in refined:
         if not corridor.get("valid", False) or not math.isfinite(score):
             continue
         if score < best_score:
@@ -412,7 +441,7 @@ def solve_single_slice(
             best_theta = theta
             best_phi = phi
             best_corridor = corridor
-            best_anchor = anchor
+            best_anchor = anchor_result
 
     best_rho, best_theta, best_phi = clamp_params(
         best_rho,
@@ -431,8 +460,8 @@ def solve_single_slice(
     }
     is_valid, violations = kill_switch(params_for_kill)
 
-    anchor_k_star = float(best_anchor.get("k_star", float("nan")))
-    anchor_theta_star = float(best_anchor.get("w_star", float("nan")))
+    anchor_k_star = float(best_anchor.k_star)
+    anchor_theta_star = float(best_anchor.theta_star)
 
     return {
         "rho": best_rho,

@@ -29,6 +29,7 @@ from core_engine.shared.calibration_config import (
     MIN_STRIKES_PER_SLICE,
     PARITY_SKEW_TOL,
     VEGA_WEIGHT_MODE,
+    MIN_IV,
 )
 
 # TimescaleDB hypertable consumed by essvi.loader
