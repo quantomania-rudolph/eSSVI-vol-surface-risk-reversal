@@ -719,7 +719,7 @@ Sequence `ingest_run_id_seq` → `next_run_id()` at backfill start. Propagated v
 
 ## 22. Verification suite (`verify.py`)
 
-Post-ingestion read-only checks (8 checks):
+Post-ingestion read-only checks. **Resume / blueprint core set (8):** table below. **`run_verification()` in code runs 18 checks** (adds watermark consistency, engine contract columns, survivorship/OI config, parity skew, ESSVI publishable integrity, forward-*k* sample, missing-rate quarantine, etc.) — see `run_verification()` in `verify.py` for the full list.
 
 | Check | What it validates |
 |-------|-------------------|

@@ -15,7 +15,7 @@ Use this table to verify resume bullets in **under 10 minutes**. Numbers marked 
 | **~19.5M** auditable reject rows | `amd_surface_quarantine` count | Snapshot **LIVE** | Same script |
 | **55%** PARITY_SKEW / **23%** DELTA_BAND | reject_code breakdown | Snapshot **LIVE** | `GROUP BY reject_code` on quarantine table |
 | 10+ reject codes, not silent drops | Quarantine schema + codes | [`dataingestion/COLUMNS.md`](../dataingestion/COLUMNS.md), [`cleaning.py`](../dataingestion/cleaning.py) | Unit tests in `test_cleaning.py` |
-| 8 post-ingest verification checks | verify suite | [`dataingestion/verify.py`](../dataingestion/verify.py) §22 in [`dataingestion.md`](../dataingestion.md) | `python -m dataingestion.verify` |
+| 8 core post-ingest checks (18 in `run_verification`) | verify suite | [`dataingestion/verify.py`](../dataingestion/verify.py) `run_verification`; core table in [`dataingestion.md`](../dataingestion.md) §22 | Import and call `run_verification(pool)` or run tests in `test_verify.py` |
 | ≥99% non-null on spot/IV/vega | SLA in verify | `check_column_coverage` in verify.py | Run verify on populated DB |
 | ±1% row count vs ingest_progress | SLA in verify | `check_row_counts` in verify.py | Run verify |
 | 7-day Timescale chunks | Config | [`dataingestion/config.py`](../dataingestion/config.py) `CHUNK_TIME_INTERVAL_DAYS` | Read constant |

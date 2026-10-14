@@ -15,7 +15,7 @@ This repository (**[eSSVI-vol-surface-risk-reversal](https://github.com/quantoma
 | **Equity ~289M bars, leakage gates** | [`metrics/EQUITY_JOURNAL_SNAPSHOT.json`](metrics/EQUITY_JOURNAL_SNAPSHOT.json) + [`EQUITY_DATA_FOUNDATION.md`](EQUITY_DATA_FOUNDATION.md) |
 | **Quarantine / reject codes** | [`../dataingestion/COLUMNS.md`](../dataingestion/COLUMNS.md) § quarantine + snapshot JSON |
 | **Timescale hypertables & load pattern** | [`../dataingestion/db_writer.py`](../dataingestion/db_writer.py) + [`../dataingestion.md`](../dataingestion.md) |
-| **Post-ingest QA (8 checks)** | [`../dataingestion/verify.py`](../dataingestion/verify.py) — run `python -m dataingestion.verify` |
+| **Post-ingest QA (8 core / 18 in `run_verification`)** | [`../dataingestion/verify.py`](../dataingestion/verify.py) + §22 in [`../dataingestion.md`](../dataingestion.md) |
 | **Pipeline blueprint** | [`../dataingestion.md`](../dataingestion.md) |
 
 ---
