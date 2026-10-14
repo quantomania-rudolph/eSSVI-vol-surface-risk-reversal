@@ -1,6 +1,20 @@
 # ThetaData Greeks — eSSVI Volatility Surface & Risk Reversal Engine
 
-> **Work in Progress** — This repository is under active development. APIs, interfaces, and calibration logic are subject to change. No guarantees of stability or correctness for production use.
+## For reviewers (resume / hiring — start here)
+
+Verifying **data pipeline** claims (ingest, cleaning, TimescaleDB, quarantine metrics)?
+
+| Step | Document |
+|------|----------|
+| 0 | **[`docs/README.md`](docs/README.md)** — full doc index |
+| 1 | **[`docs/REVIEWER_GUIDE.md`](docs/REVIEWER_GUIDE.md)** — 5-minute orientation |
+| 2 | **[`docs/RESUME_CLAIMS_EVIDENCE.md`](docs/RESUME_CLAIMS_EVIDENCE.md)** — claim → file/SQL map |
+| 3 | **[`docs/metrics/INGEST_SNAPSHOT.json`](docs/metrics/INGEST_SNAPSHOT.json)** — live options metrics (regenerate with [`scripts/reproduce_resume_metrics.py`](scripts/reproduce_resume_metrics.py)) |
+| 4 | **[`docs/EQUITY_DATA_FOUNDATION.md`](docs/EQUITY_DATA_FOUNDATION.md)** + [`docs/metrics/EQUITY_JOURNAL_SNAPSHOT.json`](docs/metrics/EQUITY_JOURNAL_SNAPSHOT.json) — companion PostgreSQL equity pipeline (~289M bars, leakage gates) |
+
+**Headline options numbers (snapshot 2026-10-14):** **8.76M** rows in `amd_surface_min`; **18.86M** chunk-level quarantines; **31.7%** pass rate; top rejects **PARITY_SKEW 55%**, **DELTA_BAND 23%** — see JSON for full breakdown.
+
+> **Work in Progress** — eSSVI calibration APIs may change. **Data ingestion** paths (`dataingestion/`, `db_writer.py`, `verify.py`) are the stable, reviewer-documented surface.
 
 ---
 
@@ -29,6 +43,7 @@ The engine calibrates eats a **clean, point-in-time, no-leakage minute panel** (
 
 ```
 ThetaData_greeks/
+├── notebooks/              # JupyterLab surface monitor (Plotly playback)
 ├── dataingestion/          # ThetaData v3 → clean minute panel → TimescaleDB
 ├── essvi/                  # eSSVI calibration engine (this repo's core)
 ├── core_engine/            # ThetaData v3 Python client (shared dependency)
@@ -53,7 +68,7 @@ The ingestion pipeline is the **foundation**. Garbage in = arbitrage-free garbag
 ### 1. ThetaData v3 Standard Tier — Exact Endpoint Map
 | Data | Endpoint | Tier | Key Params |
 |------|----------|------|------------|
-| Option quotes + 1st-order greeks + IV | `/v3/option/history/greeks/first_order` | Standard | `interval=1m`, `annual_dividend=0`, `rate_type=sofr`, `format=ndjson` |
+| Option quotes + 1st-order greeks + IV | `/v3/option/history/greeks/first_order` | Standard | `interval=15m`, `annual_dividend=0`, `rate_type=sofr`, `format=ndjson` |
 | Open Interest (daily) | `/v3/option/history/open_interest` | Value+ | `date` range |
 | Underlying spot (1-min close) | `/v3/stock/history/ohlc` | Value+ | `interval=1m` |
 | Risk-free rate (daily, EOD) | `/v3/interest_rate/history/eod` | All | `symbol=SOFR` / `TREASURY_M1/M3` |
@@ -282,12 +297,13 @@ The calibrated eSSVI surface enables these trade generation of risk-reversal sig
 | `essvi/objective.py` | **Complete** | vega² weights (3 modes), belly boost, penalties |
 | `essvi/solver.py` | **Complete** | Brent in micro-corridor, clamp, warm-start seeding |
 | `essvi/sequential.py` | **In progress** | Master loop, empty-corridor fallbacks, in-calibration calendar check |
+| `essvi/pipeline.py` | **Complete** | Stage registry, persist orchestration, gap audit |
 | `essvi/surface.py` | **Planned** | Inter-slice interpolation, extrapolation caps |
-| `essvi/audit.py` | **Planned** | Kill switch, last-good emission |
+| `essvi/audit.py` | **Complete** | Kill switch, butterfly/calendar/Lee checks |
 | `essvi/regularize.py` | **Planned** | Temporal Tikhonov, session-open reset |
-| `essvi/runtime.py` | **Planned** | Minute loop, no-trade tagging, persistence |
-| `essvi/persistence.py` | **Planned** | Params table write (not dense grid) |
-| `essvi/tests/` | **Partial** | Constraint/anchor/objective/solver tests exist; sequential/surface/audit/runtime pending |
+| `essvi/runtime.py` | **Complete** | Minute loop, no-trade tagging, DB persist + warmstart |
+| `essvi/persistence.py` | **Complete** | `essvi_surface_params` + `essvi_surface_audit` upserts |
+| `essvi/tests/` | **Partial** | Core + runtime/pipeline integration; surface pending |
 
 ### Known Gaps (Tracked in `PLAN.md` / `LIVE_RUN_HALTS.md`)
 1. **Short-maturity slice handling (DTE ≤ 14):** Minimum strikes, `ρ` fallback, anchor quality flags — logic defined in `eSSVI_surface_plan.md` §4.1, implementation pending
@@ -328,6 +344,35 @@ pytest dataingestion/ -v --tb=short
 # 7. (Future) Run eSSVI calibration
 # python -m essvi.runtime --date 2024-01-15
 ```
+
+---
+
+## Surface Monitor (JupyterLab)
+
+Interactive Plotly viewer for calibrated eSSVI surfaces — type a ticker, scrub/play through minutes, inspect 3D IV surfaces and 2D smile slices.
+
+All visualization code lives in **`eSSVI visualization/`**.
+
+```bash
+# Viz deps (once)
+pip install -r "eSSVI visualization/requirements.txt"
+
+# Point at your calibration DB
+export ESSVI_DATABASE_URL="postgresql://user:pass@host:5432/dbname"
+# or: export ESSVI_DATABASE_URL="sqlite:///path/to/essvi.db"
+
+# From repo root
+jupyter lab "eSSVI visualization/surface_monitor.ipynb"
+```
+
+Static browser preview (no Jupyter):
+
+```bash
+python "eSSVI visualization/viz_practice.py"
+# open eSSVI visualization/artifacts/practice.html
+```
+
+In the notebook: run setup → run monitor → enter ticker (e.g. `AMD`) → **Load**. Use the session date picker, minute slider, and Play control. A **NEW TRADING DAY** banner appears when the ET session date changes; enable **Show killed minutes** to inspect kill-switch surfaces.
 
 ---
 

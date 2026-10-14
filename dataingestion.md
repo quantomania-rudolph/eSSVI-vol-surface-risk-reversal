@@ -1,37 +1,53 @@
-# AMD eSSVI Surface — Data Ingestion Blueprint (Updated to Implementation Reality)
+# eSSVI Surface — Data Ingestion Blueprint (Updated to Implementation Reality)
 
-**Scope:** 1-minute option + underlying data for **AMD**, **2018-01-01 → present**, filtered and cleaned at ingestion, written to a TimescaleDB hypertable as the input panel for an extended-SSVI (eSSVI) volatility surface fitter.
+> **Reviewers:** resume metrics and claim map → [`docs/REVIEWER_GUIDE.md`](docs/REVIEWER_GUIDE.md) · live counts → [`docs/metrics/INGEST_SNAPSHOT.json`](docs/metrics/INGEST_SNAPSHOT.json)
+
+**Scope:** 1-minute option + underlying data for the **S&P 500 ∪ Russell 2000** equity universe, **2021-01-01 → present**, filtered and cleaned at ingestion, written to TimescaleDB hypertables as the input panel for an extended-SSVI (eSSVI) volatility surface fitter.
+
+**Rates:** ALFRED vintage API (`SOFR`, `DTB4WK`, `DTB3`) with publication cutoffs + vintage ≤ knowledge attach (`RATE_SOURCE=alfred`) — Theta `/v3/interest_rate` is **deprecated**.
+**Splits:** Yahoo Finance chart events → `corporate_actions` + forward-split zones (`SPLIT_TRANSITION`) — Theta `/v3/stock/history/split` is **deprecated**.
+**Dividends:** Yahoo chart `events=div` → `dividends` table → trailing TTM continuous `q` for payers; zero-div registry members keep `q=0`.
+**Spot:** Theta stock OHLC (not Alpaca; Alpaca is HMM-GMM `spot_bars` only).
+
+**Universe policy:** Full index union. `zero_dividend_registry.csv` routes `dividend_policy=zero` (`q=0`, `F=S·e^{rT}`). All other names use Yahoo TTM `q` (`DIVIDEND_PROVIDER=yahoo`).
+
+See also: `docs/ZERO_DIV_INGEST_RUNBOOK.md`, `core_engine/shared/universe.py`, `config/universe/zero_dividend_registry.csv`.
 
 **Verified against the live Theta Data v3 docs (`docs.thetadata.us`), not the v2-style paths in the source images.** v2 endpoints return `410 GONE`.
 
 ---
 
-## 0. Ticker-specific facts that simplify the build
+## 0. Universe facts
 
 | Fact | Consequence |
 |------|-------------|
-| AMD has paid **no dividend** in the 2018→now window (last/only payment $0.005 in 1995) | **q = 0** for the whole window. Forward collapses to `F = S·e^{rT}`. Dividend handler is a guardrail, not a live input. |
-| AMD's **last split was 2000-08-22** (2:1) | **No split adjustment** needed inside the window. Historical strikes from Theta are already the correct raw strikes. |
-| AMD trades in the **Penny Interval Program** | Quotes live on a `$0.01` grid → sub-penny detection is the tick check. |
-| AMD is on the **UTP / Nasdaq tape** | Full history depth; not limited like CTA-only names (SPY). |
+| **Full index union** (SP500 ∪ R2K) | All current constituents ingest; ~400+ are dividend payers (Yahoo TTM `q`). |
+| **Zero-div registry** (~1,071 names) | `dividend_policy=zero` → `q=0`, `F=S·e^{rT}`, no Yahoo div fetch. |
+| Registry refreshed via `scripts/build_zero_dividend_registry.py` | Symbols that start paying dividends leave registry → auto `provider` via `get_profile`. |
+| Per-symbol profiles in `config/symbol_profiles.yaml` | Overrides for tick scheme, OI, spreads; dividend policy resolved from registry. |
+| Split guardrail optional per symbol | `split_check: false` skips Yahoo split zones; dividends independent. |
 
-Build the dividend + split infrastructure anyway (Section 7) so the pipeline generalizes and catches a future AMD dividend, but for AMD today both are effectively no-ops.
+**Index survivorship:** We do **not** maintain point-in-time index membership for delisted names (no historical data). Ingestion uses **today's** constituent CSVs; option chains remain **as-of bar date** via Theta `list/contracts` (§12.7).
+
+**Pilot symbols:** zero-div → `get_pilot_symbols()`; dividend payers → `get_dividend_pilot_symbols()` (AAPL, MSFT, …).
 
 ---
 
 ## 0b. QUICK REFERENCE: What each data category is FOR (for new readers)
 
-> **The eSSVI surface fitter minimizes:** `Σ vega_i · (IV_i - IV_model(k_i, T_i))^2`
+> **The eSSVI surface fitter minimizes:** `Σ W_i · (w_model(k_i) - w_mkt(k_i))²` where
+> `w = σ²·T` (total variance) and `W_i` is the pre-computed variance-space vega² weight
+> (`var_vega2`) stored in the `vega` column.
 >
-> Every data element below either defines the **target** `IV_i`, the **coordinates** `(k_i, T_i)`, or the **weight** `vega_i`.
+> Every data element below either defines the **target** `w_mkt`, the **coordinates** `(k_i, T_i)`, or the **weight** `W_i`.
 
 | Data Category | Endpoint(s) | What It Feeds | Why It Matters |
 |---------------|-------------|---------------|----------------|
 | **Option quotes + 1st-order greeks + IV** | `greeks/first_order` | `bid, ask` → mid/spread; `implied_vol` → **target IV_i**; `delta` → filter; `vega_api` → cross-check | **Core input.** Without clean quotes and IV, there is no surface to fit. |
 | **Open Interest (daily)** | `option/history/open_interest` | Cleaning filter `OI > 100` (Section 5 #8); stored for audit | **Liquidity reality check.** Tight spread + zero OI = phantom market. Filters out contracts where execution slippage would destroy the mid-price assumption. |
 | **Underlying spot (1-min close)** | `stock/history/ohlc` | `spot_price` → `forward_price` → `k = ln(K/F)` | **Moneyness anchor.** Wrong spot = horizontal shift of entire surface. |
-| **Risk-free rate (daily, tenor-matched)** | `interest_rate/history/eod` | `r` → forward `F = S·e^{rT}`; vega discount `e^{-rT}` | **Forward & vega scaling.** Rate error = forward error (moneyness shift) + vega weight error. |
-| **Dividend yield q** | External (Alpha Vantage/Polygon) | Forward `F = S·e^{(r-q)T}` | For AMD = 0. For other tickers, non-zero q shifts forward. |
+| **Risk-free rate (daily, tenor-matched)** | FRED `SOFR` / `DTB4WK` / `DTB3` | `r` → forward `F = S·e^{rT}`; vega discount `e^{-rT}` | **Forward & vega scaling.** Rate error = forward error (moneyness shift) + vega weight error. |
+| **Dividend yield q** | Yahoo TTM (`provider`) or `0` (registry) | Forward `F = S·e^{(r−q)T}` | See §7 dividend table; registry-routed in `get_profile`. |
 | **Business time T (precise)** | Computed from `pandas_market_calendars` | `T` in forward, vega, moneyness | **Decay clock.** Calendar-day T overstates intraday decay → surface "breathes" falsely. |
 | **Vega (computed locally, Numba)** | `math.py` → `_vega_kernel` | **Weight `vega_i` in eSSVI loss** | High-vega (ATM, long-dated) options dominate the fit. Zero/missing vega = unweighted fit = noise fitting. |
 | **Expirations + Contracts lists** | `list/expirations`, `list/contracts` | Survivorship-safe universe per date | Prevents look-ahead bias: only trade contracts that actually existed on each date. |
@@ -54,9 +70,11 @@ Base URL: `http://{THETA_HOST}:{THETA_PORT}/v3/...`. Terminal must be running.
 | Expirations as-of a date | `/v3/option/list/expirations` | — | `symbol` | sorted expiration dates |
 | Contracts listed on a date | `/v3/option/list/contracts` | — | `symbol`, `date` | strikes/rights live that day (survivorship-safe universe) |
 | **Underlying spot (minute close)** | `/v3/stock/history/ohlc` | VALUE+ | `symbol=AMD`, `start_date`,`end_date`, `interval=1m` | `timestamp, open, high, low, close, volume` → use **`close`** |
-| **Risk-free rate** | `/v3/interest_rate/history/eod` | ALL | `symbol=SOFR` (or `TREASURY_M1/M3`), `start_date`,`end_date` | `created, rate` (**percent**, e.g. `4.50` = 4.5%) |
-| Splits (guardrail) | `/v3/stock/history/split` *(listed under Standard in tier table; confirm exact path)* | STANDARD+ | `symbol` | split events |
-| Dividends (q) | **NOT IN THETA** → Alpha Vantage / Polygon | — | — | cash dividend amounts + ex-dates → for AMD = empty |
+| **Risk-free rate** | **ALFRED** (FRED vintage) | external | `series_id=SOFR\|DTB4WK\|DTB3` | vintage matrix → `rate_observations_vintage` + pub-cutoff attach |
+| Splits (forward zones) | **Yahoo** chart `events=split` | external | symbol + period | ex_date (ET), ratio → `corporate_actions` / `SPLIT_TRANSITION` |
+| ~~Theta interest_rate~~ | ~~`/v3/interest_rate/history/eod`~~ | **deprecated** | — | use FRED |
+| ~~Theta splits~~ | ~~`/v3/stock/history/split`~~ | **deprecated** | — | use Yahoo |
+| Dividends (q) | **Not used in production** | — | — | Universe is zero-dividend only; `q=0`, `annual_dividend=0` on Theta |
 | Trading calendar / holidays | `/v3/calendar/year`, `/v3/calendar/on_date` | — | `year` / `date` | holidays, early closes (cross-check for business time) |
 
 ### Corrections to `THETA_API.md` (your engine doc is partly v2/invalid)
@@ -65,9 +83,8 @@ Base URL: `http://{THETA_HOST}:{THETA_PORT}/v3/...`. Terminal must be running.
 |---------------------|--------------|
 | `option_chain_greeks_history` → `/v3/option/history/greeks/all` | `greeks/all` is **PRO**. On Standard use `greeks/first_order`. |
 | default interval "5-minute bars" | We need **`interval=1m`**. |
-| `risk_free_rate_cc` → `/v3/stock/history/rate?tenor=90` | **Invalid path.** Use `/v3/interest_rate/history/eod?symbol=SOFR`. Rate is a **percent**, not a cc decimal — convert (Section 7). |
-| `annual_dividend_amount` → `/v3/stock/history/dividend` | **No such endpoint.** Use external provider; for AMD q=0. |
-| `spot_price` → `/v3/stock/snapshot/quote` | Snapshot is **real-time only**. For 2018→now backfill use `/v3/stock/history/ohlc`. |
+| `risk_free_rate_cc` → `/v3/stock/history/rate?tenor=90` | **Invalid path.** Use **FRED** (`SOFR`/`DTB4WK`/`DTB3`) via `dataingestion.fred_rates`. |
+| `spot_price` → `/v3/stock/snapshot/quote` | Snapshot is **real-time only**. For 2021→now backfill use `/v3/stock/history/ohlc`. |
 | greeks multi-day requests | **Capped at 1 month per request** → chunk the backfill (Section 3). |
 
 ---
@@ -85,7 +102,7 @@ Everything the eSSVI surface fitter needs, where it comes from, and **exactly wh
 | `delta` (for filter) | `greeks/first_order.delta` | Pre-filter: keep `0.10 ≤ \|delta\| ≤ 0.90` (Section 4) | Deep ITM/OTM options have unreliable IV → pollutes surface wings |
 | `spot_price` (S) | `stock/history/ohlc.close`, same minute | Forward price `F = S·e^{(r−q)T}`; log-moneyness `k = ln(K/F)` | Wrong spot → wrong forward → wrong moneyness → surface shifted horizontally |
 | `forward_price` (F) | computed: `S·e^{(r−q)T}` (AMD: `S·e^{rT}`) | **eSSVI x-axis anchor**; all strikes mapped to `k = ln(K/F)` | Wrong forward = moneyness distortion = surface shape error |
-| `r` | `interest_rate/history/eod`, tenor-matched, percent→decimal | Forward price `F`; vega discount factor `e^{-rT}` | Wrong rate → forward error (small for short DTE) + vega scaling error |
+| `r` | FRED ladder + ET PIT asof + DTE knot interp, percent→decimal→cc | Forward price `F`; vega discount factor `e^{-rT}` | Wrong rate → forward error (small for short DTE) + vega scaling error |
 | `q` | external; AMD = 0 | Forward price `F = S·e^{(r−q)T}` | Non-zero q for AMD would shift forward incorrectly |
 | `business_t` (T) | computed from exchange calendar (Section 6) | **Time to expiry in years** — used in forward, vega, moneyness | Calendar-day T overstates decay intraday → surface "breathes" falsely |
 | `vega` | computed locally, Numba BS (Section 9) | **Weight** in eSSVI loss function: `min Σ vega_i · (IV_i - IV_model)^2` | Missing/zero vega = unweighted fit = surface fits noise in illiquid options |
@@ -202,23 +219,37 @@ def business_T(bar_ts, expiry_date, cal):           # cal = mcal schedule
 
 **Purpose:** Used in two places — forward price `F = S·e^{(r−q)T}` and vega discount factor `e^{-rT}`. Even small rate errors compound in the forward (moneyness shift) and vega weight.
 
-- Endpoint: `/v3/interest_rate/history/eod?symbol={SOFR|TREASURY_M1|TREASURY_M3|...}`.
-- Returned `rate` is a **percent** → `r_simple = rate / 100`.
-- **Tenor-match the option's DTE** (Image 1: "SOFR or 1-month T-bill matching your expiration bucket"). For DTE∈[7,90]: use `TREASURY_M1` for short, `TREASURY_M3` for the upper end, or linearly interpolate across `SOFR / M1 / M3` by DTE.
-- **Compounding:** SOFR/T-bills are simple money-market rates; BS expects continuous compounding. For these short tenors the gap is tiny, but to be exact: `r_cc = ln(1 + r_simple·τ)/τ`, τ = tenor in years. A flat `r = rate/100` treated as cc is the acceptable simplification; make it a config switch (`SIMPLE_TO_CC`).
-- Rates are **daily** → fetch once, cache, and join by date with point-in-time discipline (Section 12).
+- **Source:** ALFRED (FRED vintage API) for production (`RATE_SOURCE=alfred`). Series: `SOFR`, `DTB4WK` (TREASURY_M1), `DTB3` (TREASURY_M3). Stored in `rate_observations_vintage` (immutable).
+- **Attach:** `attach_rates_vintage_backward` — (1) knowledge vintage = ET bar date, (2) publication shift via `RATE_PUBLICATION_ET` (SOFR 08:00 ET, H.15 16:15 ET) using prior NYSE session, (3) last `observation_date ≤ effective_obs_date` among rows with `vintage_date ≤ knowledge`. Never uses a future revision.
+- **SOFR dating:** FRED `observation_date` is the rate *for* that date; NY Fed publishes next business morning ~08:00 ET.
+- **Tenor-match:** interpolate across SOFR / M1 / M3 by DTE; optional `SIMPLE_TO_CC`.
+- **Smoke only:** `RATE_SOURCE=fred` uses latest-revision FRED (non-PIT). Re-backfill after switching to ALFRED if historical `r`/`F`/`local_iv` must be vintage-correct.
 
 ### Dividend yield `q`
 
-**Purpose:** Forward price `F = S·e^{(r−q)T}`. For non-zero q, the forward drops relative to spot, shifting moneyness.
+**Two policies (registry-routed in `get_profile`):**
 
-- **AMD = 0.0** across the window. Hard-code `q=0` for AMD and assert no ex-dates land in `[bar_date, expiration]`.
-- General handler (Image 2): nightly worker hits **Alpha Vantage / Polygon** for cash dividend amounts + ex-dates → store in a `dividends(symbol, ex_date, cash_amount, announced_date)` table. Continuous yield `q ≈ trailing_12m_cash / S`, applied **point-in-time** (only ex-dates whose **announce date ≤ bar date**).
+| Policy | Who | Behavior |
+|--------|-----|----------|
+| `zero` | `zero_dividend_registry.csv` members | `q=0`, no Yahoo fetch, Theta `annual_dividend=0` |
+| `provider` | All other SP500∪R2K names | Yahoo `events=div` → `dividends` table → trailing TTM `q = ln(1 + cash/S)` |
 
-### Splits (guardrail)
+- **Source:** Yahoo chart API ($0), same family as splits. `announced_date := ex_date` (Yahoo has no declaration date) — correct for **realized trailing** cash.
+- **PIT:** include cash only if `declared_date <= bar_date_et` and `ex_date` in lookback window (`DIVIDEND_LOOKBACK_DAYS=365`).
+- **Fail-loud:** empty events for a payer → `MISSING_DIVIDEND` (no silent `q=0`).
+- **Ex in option life:** `flag_dividend_in_life` → quarantine `DIVIDEND_IN_LIFE` (continuous-q model risk).
+- **Theta:** chunk-end trailing cash dollars as `annual_dividend` (MVP); eSSVI uses `local_implied_vol` from our `F`.
+- **Re-backfill:** required for payers after enabling Plan 1B (historical `q`/`F`/`k` stale).
 
-- AMD: none since 2000 → no action in-window.
-- General: store split events; **never back-adjust historical strikes with future splits** (that is look-ahead). Theta already returns the raw historical strikes that traded.
+See `docs/DIVIDEND_INGEST_RUNBOOK.md`. Registry maintenance: `python scripts/build_zero_dividend_registry.py`.
+
+### Splits (forward zones — never back-adjust)
+
+- **Never** multiply historical strikes by future split ratios (look-ahead).
+- Yahoo `events=split` → `corporate_actions` (`action_type=forward_split`, `ratio_num`/`ratio_den`).
+- Zones via `apply_forward_split_zones`: **pre-ex** keep raw; **post-ex** ingest raw new grid; **transition** (old strike vs new spot) → `SPLIT_TRANSITION` quarantine.
+- Prefetch TTL: `SPLIT_PREFETCH_TTL_HOURS` (default 168) refreshes stale DB rows.
+- `split_check: false` (e.g. AMD) skips all split logic.
 
 ---
 
@@ -229,8 +260,8 @@ def business_T(bar_ts, expiry_date, cal):           # cal = mcal schedule
   - *Known minor inconsistency:* Theta's `implied_vol`/`delta` were computed off the underlying mid, not your close. Acceptable for a vega-weighting input. **Optional rigor upgrade:** re-invert IV locally from the option mid against your own `F` for full internal consistency.
   - **Why it matters for eSSVI:** Spot is the anchor for forward price. A 1% spot error = 1% forward error = horizontal shift of the entire volatility smile.
 
-- **Forward:** `F = S·e^{(r−q)T}` → for AMD `F = S·e^{rT}`.
-  - **Why it matters for eSSVI:** Forward converts strikes to log-moneyness `k = ln(K/F)`. The eSSVI surface is parameterized in `(k, T)` space. Wrong forward = wrong moneyness = surface fits the wrong coordinates.
+- **Forward:** `F = S·e^{(r−q)T}` (`q=0` for zero-div registry; TTM continuous `q` for payers).
+  - **Why it matters for eSSVI:** Forward converts strikes to log-moneyness `k = ln(K/F)`. The eSSVI surface is parameterized in `(k, T)` space. Wrong forward = wrong moneyness = surface fits the wrong coordinates. Engine trusts ingested `F`/`k` (never recomputes from spot).
 
 - **Log-moneyness (eSSVI x-axis):** `k = ln(K / F)`. Store `forward_price`; `k` can be derived or materialized.
   - **Why it matters for eSSVI:** This is the **primary x-coordinate** of the surface. The eSSVI parameterization `θ(k) = ...` expects moneyness, not raw strikes. Using strikes directly would make the surface non-stationary across time/spot moves.
@@ -239,7 +270,8 @@ def business_T(bar_ts, expiry_date, cal):           # cal = mcal schedule
 
 ## 9. Black-Scholes vega (local, Numba)
 
-**Purpose:** Vega = `∂Price/∂σ` is the **weighting function** for the eSSVI loss. The surface fit minimizes `Σ vega_i · (IV_i − IV_model(k_i, T_i))²`. High-vega options (ATM, longer-dated) get more weight; low-vega options (wings, near-expiry) get less. This is the theoretically correct weighting — it's the sensitivity of the option price to vol error.
+**Purpose:** The pipeline stores **variance-space vega²** (`ν_var²`) in the `vega` column when
+`VEGA_WEIGHT_MODE=var_vega2`. The eSSVI objective uses these pre-computed weights directly.
 
 Compute vega in the **forward (Black-76) convention** for consistency with `k = ln(K/F)` (numerically identical to the spot form when `F=S·e^{(r−q)T}`):
 
@@ -347,9 +379,9 @@ The non-negotiables, beyond "use the close":
 
 1. **Point-in-time everything.** No value timestamped *after* a bar may enter that bar's row.
 2. **Same-minute join.** Floor option and stock bars to the identical minute boundary; the spot is that minute's `close`. No cross-minute borrowing.
-3. **Rates as-of date.** SOFR for day *D* is published ~08:00 ET *D* (for prior activity). Forward-fill the **last rate published on/before** the bar date; never a rate printed later.
-4. **Dividends as-of announce date.** Apply only ex-dates whose **announcement ≤ bar date**. (AMD: none — assert empty.)
-5. **No future split back-adjustment.** Use raw historical strikes exactly as listed then.
+3. **Rates as-of (ALFRED).** Knowledge vintage = ET bar date. SOFR publishes ~08:00 ET (observation is for prior calendar activity); H.15 T-bills ~16:15 ET. Bars before that clock use the **prior NYSE session** as the effective observation date. Attach the last observation with `observation_date ≤ effective` and `vintage_date ≤ knowledge` — never a later revision. See §7 and `rate_observations_vintage`.
+4. **Dividends as-of announce date.** Trailing TTM cash uses `declared_date ≤ bar_date_et` (Yahoo: `announced_date = ex_date`). Payers refuse silent `q=0` (`MISSING_DIVIDEND`). Zero-div registry: `q=0`.
+5. **No future split back-adjustment.** Keep raw pre-ex strikes; ingest post-ex raw chain; quarantine only `SPLIT_TRANSITION` (old grid vs new spot). Never rescale history.
 6. **No backward-fill of quotes.** A dead minute stays null/dropped. Carry-forward is allowed *only* for slow exogenous series (`r`, `q`) and *only* from the past.
 7. **Survivorship-safe universe.** Build each date's contract set from `list/contracts`/`list/expirations` **as of that date**, not today's chain.
 8. **Prior-session OI (strict mode).** EOD OI prints after the close, so intraday on day *D* only day *D−1*'s OI is truly known. Join *D−1* OI to *D*'s minutes for strict no-leakage; same-day EOD OI is the looser research default — pick one and document it.
@@ -388,7 +420,7 @@ for E in option_list_expirations("AMD"):
               .pipe(clean_quotes_and_arbitrage)          # §5 (1-7)
               .merge(stock_close, on="minute")           # §8 spot
               .pipe(join_oi_prior_session, oi)           # §5 #8 + §12.8
-              .pipe(attach_rate_pit, rates)              # §7/§12.3
+              .pipe(attach_rates_asof_backward, rates)    # §7/§12.3
               .assign(q=0.0)                             # AMD
               .pipe(compute_business_T, cal)             # §6
               .pipe(compute_forward)                     # §8
@@ -745,7 +777,7 @@ from dataingestion.orchestrator import run_backfill
 import asyncio
 import datetime as dt
 
-# Minimal (defaults: AMD, SOFR, 2018-01-01 → today)
+# Minimal (defaults: AMD, FRED SOFR ladder, 2021-01-01 → today)
 result = asyncio.run(run_backfill())
 
 # Custom

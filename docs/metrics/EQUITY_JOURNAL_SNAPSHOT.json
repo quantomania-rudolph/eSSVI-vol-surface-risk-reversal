@@ -1,0 +1,35 @@
+{
+  "source": "FILE OF DATA operational journal (2026-05-21) — companion equity pipeline, not stored in this Git repo",
+  "generated_at_utc": "2026-10-14T22:55:00+00:00",
+  "reproduce_note": "Equity metrics are verified via PostgreSQL data_foundation + SQL audit scripts in the FILE OF DATA project folder.",
+  "gap_ingest": {
+    "equity_bars_5m": 214000000,
+    "equity_bars_15m": 75000000,
+    "approx_total": 289000000,
+    "date_range_end": "2026-05-19",
+    "date_range_start": "2010"
+  },
+  "leakage_gate_06": {
+    "01_violation_raw_future_ts": 0,
+    "02_violation_atoms_future_bar_end": 0,
+    "03_violation_split_assignment": 0,
+    "04_instruments_missing_membership_after_fix": 0,
+    "membership_gap_before_08f": 103,
+    "membership_gap_after_08f": 4,
+    "membership_gap_reduction_pct": 96.1
+  },
+  "operations": {
+    "refresh_materialized_atoms_minutes": 95,
+    "walk_forward_splits_per_interval": 8,
+    "bar_end_bt_views_deployed": 8,
+    "intraday_lookahead_minutes_avoided": "5-15",
+    "audit_monolith_hung_hours": 3
+  },
+  "evidence_files_in_file_of_data": [
+    "JOURNAL.md",
+    "READ-ME-NOW.txt",
+    "DATA_LEAKAGE_ACTION_PLAN.txt",
+    "DONE/Bar end leakage/READ.ME",
+    "sql/audit/06_leakage_verification_suite/RUN_ORDER.txt"
+  ]
+}

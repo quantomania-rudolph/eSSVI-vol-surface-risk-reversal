@@ -1,0 +1,49 @@
+{
+  "generated_at_utc": "2026-10-14T22:56:59.972554+00:00",
+  "database": "data_foundation",
+  "scope_note": "Current DB snapshot; universe/date range may differ from full backfill plans.",
+  "universe_note": "amd_surface_min currently SPY + EEM (2 underlyings); full SP500 union is documented in dataingestion.md scope.",
+  "ingest_progress_completed": {
+    "rows_loaded": 8757493,
+    "rows_quarantined": 18859750,
+    "pass_rate_pct": 31.7,
+    "quarantine_rate_pct": 68.3
+  },
+  "amd_surface_min": {
+    "row_count": 8754632,
+    "ts_min": "2021-01-04T06:35:00-08:00",
+    "ts_max": "2024-08-23T13:00:00-07:00",
+    "distinct_underlyings": 2
+  },
+  "amd_surface_quarantine": {
+    "row_count": 19541729,
+    "reject_code_counts": {
+      "PARITY_SKEW": 10800838,
+      "DELTA_BAND": 4534873,
+      "LOW_OI": 1907111,
+      "NO_QUOTE": 1106549,
+      "SPREAD_HARD": 1093756,
+      "LOCAL_IV_FAIL": 94633,
+      "MONOTONICITY": 1611,
+      "BUSINESS_T_BAND": 1394,
+      "CROSSED": 964
+    },
+    "reject_code_pct_of_quarantine": {
+      "PARITY_SKEW": 55.3,
+      "DELTA_BAND": 23.2,
+      "LOW_OI": 9.8,
+      "NO_QUOTE": 5.7,
+      "SPREAD_HARD": 5.6,
+      "LOCAL_IV_FAIL": 0.5,
+      "MONOTONICITY": 0.0,
+      "BUSINESS_T_BAND": 0.0,
+      "CROSSED": 0.0
+    }
+  },
+  "timescaledb_hypertables_chunks": {
+    "amd_surface_min": 63,
+    "underlying_spot_1m": 290
+  },
+  "reproduce_command": "python scripts/reproduce_resume_metrics.py",
+  "verify_suite_command": "python -m dataingestion.verify"
+}
